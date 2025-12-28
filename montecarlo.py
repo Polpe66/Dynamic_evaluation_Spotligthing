@@ -232,7 +232,7 @@ def plot_summary(results, K: int):
 
 # ----------------------------
 # Main
-# ----------------------------
+
 def main():
     random.seed(SEED)
 
