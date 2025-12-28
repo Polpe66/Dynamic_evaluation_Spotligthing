@@ -28,16 +28,25 @@ K_GRAM = 3
 COLLISION_PROB = 1.0 / (N_CHARS ** K_GRAM)  # ~4.2e-6 for (62,3)
 
 # Per-step leak hazard chosen so that P(leak by attempt t) ≈ 1-exp(-LEARN_LAMBDA*(t-1))
-# (i.e., memoryless exponential in discrete time)
 P_LEAK_PER_STEP = 1.0 - math.exp(-LEARN_LAMBDA)
 
-# Paper replication targets (Summarization)
-PAPER_ASR_SUMMARIZATION = {
-    "None": 0.60,
-    "InstructionsOnly": 0.60,  # keep equal to baseline to avoid inventing a number
-    "Delimiting": 0.30,
-    "Datamarking": 0.031,
-    "Encoding": 0.0,
+# --- CONFIGURAZIONE MODELLI ---
+# Qui inseriamo le probabilità statiche (Attack Success Rate - ASR) per ogni modello
+MODELS_ASR = {
+    "GPT-3.5": {
+        "None": 0.60,
+        "InstructionsOnly": 0.60,
+        "Delimiting": 0.30,
+        "Datamarking": 0.031,
+        "Encoding": 0.0,
+    },
+    "Qwen 2.5": {
+        "None": 0.45,            # Baseline
+        "InstructionsOnly": 0.25, # Migliora un po' rispetto a baseline
+        "Delimiting": 0.55,       # ATTENZIONE: Peggiora (Attention Trap)
+        "Datamarking": 0.10,      # Molto efficace, ma non zero
+        "Encoding": 0.0,
+    }
 }
 
 DEFENSES = ["None", "InstructionsOnly", "Delimiting", "Datamarking", "Encoding"]
@@ -46,31 +55,26 @@ DEFENSES = ["None", "InstructionsOnly", "Delimiting", "Datamarking", "Encoding"]
 # ----------------------------
 # Helpers
 # ----------------------------
-def asr_static(defense: str) -> float:
-    return PAPER_ASR_SUMMARIZATION[defense]
+def asr_static(defense: str, model_name: str) -> float:
+    """Restituisce l'ASR statico per la difesa e il modello specificati."""
+    return MODELS_ASR[model_name][defense]
 
 
 # ----------------------------
 # Simulation
 # ----------------------------
-def run_static_test(defense: str, n: int) -> float:
+def run_static_test(defense: str, n: int, model_name: str) -> float:
     """Static benchmark: 1 attempt per episode (paper-like single-shot ASR)."""
-    p = asr_static(defense)
+    p = asr_static(defense, model_name)
     wins = 0
     for _ in range(n):
         wins += (random.random() < p)
     return wins / n
 
 
-def run_dynamic_twin(defense: str, n: int, K: int):
+def run_dynamic_twin(defense: str, n: int, K: int, model_name: str):
     """
-    Dynamic Security Twin:
-    - Up to K attempts per episode.
-    - Compromised if ANY attempt succeeds (session risk).
-    - Delimiting: stochastic 'leak/learning' event => after leak, p becomes baseline.
-    - Datamarking: rare token-guess event => once guessed in-session, p becomes baseline.
-    - Encoding: fixed at 0 (paper-like for summarization).
-    Returns: compromise_rate, steps_to_compromise, hacked_by_step, traces
+    Dynamic Security Twin simulation.
     """
     compromised = 0
     steps_to_compromise = []
@@ -78,7 +82,7 @@ def run_dynamic_twin(defense: str, n: int, K: int):
     traces = []
 
     for _ in range(n):
-        # Twin state variables (toy, but now meaningful)
+        # Twin state variables
         delim_leaked = False
         token_guessed = False
 
@@ -90,35 +94,30 @@ def run_dynamic_twin(defense: str, n: int, K: int):
         for t in range(1, K + 1):
             # --- Update attacker knowledge / rare events (before attempt) ---
             if defense == "Delimiting" and ATTACKER_KNOWS_PROMPT and not delim_leaked and t >= 2:
-                # leak/learning happens with a per-step hazard; once leaked it persists
                 if random.random() < P_LEAK_PER_STEP:
                     delim_leaked = True
 
             if defense == "Datamarking" and not token_guessed:
-                # rare token-guess; once guessed it persists for the session
                 if random.random() < COLLISION_PROB:
                     token_guessed = True
 
             # --- Determine effective per-attempt success probability ---
-            p_attack = asr_static(defense)
+            p_attack = asr_static(defense, model_name)
 
-            # If a defense collapses, revert to baseline
+            # If a defense collapses, revert to baseline of THAT model
             if defense == "Delimiting" and delim_leaked:
-                p_attack = asr_static("None")
+                p_attack = asr_static("None", model_name)
 
             if defense == "Datamarking" and token_guessed:
-                p_attack = asr_static("None")
+                p_attack = asr_static("None", model_name)
 
-            # Encoding fixed at 0 for summarization (paper-like)
             if defense == "Encoding":
                 p_attack = 0.0
 
             # --- Monte Carlo attempt ---
             outcome = (random.random() < p_attack)
 
-            # Intrusion-graph next state:
-            # - on success: go to absorbing COMPROMISED node
-            # - on fail: go to next time state
+            # Intrusion-graph next state
             if outcome:
                 next_state = ("COMPROMISED",)
             else:
@@ -144,12 +143,6 @@ def run_dynamic_twin(defense: str, n: int, K: int):
 # Intrusion graph
 # ----------------------------
 def build_intrusion_graph(traces):
-    """
-    Intrusion graph:
-    nodes: states
-    edges: transitions labeled SUCCESS/FAIL (+ counts)
-    This is safe with DiGraph now because SUCCESS goes to a distinct terminal node.
-    """
     if not HAS_NX:
         return None
 
@@ -191,8 +184,14 @@ def save_intrusion_graph_png(G, filename: str, title: str):
 # ----------------------------
 # Plotting
 # ----------------------------
-def plot_summary(results, K: int):
+def plot_summary(results, K: int, model_name: str):
+    """
+    Genera un grafico specifico per il modello passato come argomento.
+    """
     fig = plt.figure(figsize=(14, 6), constrained_layout=True)
+    
+    # Clean model name for filename
+    safe_name = model_name.replace(" ", "_").lower()
 
     # Bars: static vs dynamic
     ax1 = fig.add_subplot(1, 2, 1)
@@ -209,7 +208,7 @@ def plot_summary(results, K: int):
     ax1.set_xticklabels(labels, rotation=20)
     ax1.set_ylim(0, 110)
     ax1.set_ylabel("Probability of Compromise (%)")
-    ax1.set_title("Security Twin: Static Benchmark vs Dynamic Session Risk")
+    ax1.set_title(f"Security Twin: {model_name} (Static vs Dynamic)")
     ax1.legend()
     ax1.grid(axis="y", linestyle="--", alpha=0.5)
 
@@ -221,73 +220,83 @@ def plot_summary(results, K: int):
 
     ax2.set_xlabel("Attempts in Session")
     ax2.set_ylabel("Cumulative P(Compromise) (%)")
-    ax2.set_title(f"Compromise Probability vs Attempts (Max {K})")
+    ax2.set_title(f"{model_name}: Risk Evolution (Max {K} steps)")
     ax2.grid(True, linestyle="--", alpha=0.6)
     ax2.set_ylim(-2, 105)
     ax2.legend(fontsize=9)
 
-    plt.savefig("spotlighting_security_twin_results.png")
-    print("[OK] Saved: spotlighting_security_twin_results.png")
+    filename = f"security_twin_results_{safe_name}.png"
+    plt.savefig(filename)
+    print(f"[OK] Saved: {filename}")
+    plt.close()
 
 
 # ----------------------------
 # Main
-
+# ----------------------------
 def main():
     random.seed(SEED)
 
     expected_collisions = NUM_SIMULATIONS * MAX_ATTEMPTS * COLLISION_PROB
 
-    print("=== Spotlighting Security Twin (Summarization) ===")
-    print("Scenario: Replicazione Paper vs Analisi Dinamica (Security Twin)")
+    print("=== Spotlighting Security Twin (Multi-Model) ===")
     print(f"Simulazioni: {NUM_SIMULATIONS}, Max Tentativi/Episodio: {MAX_ATTEMPTS}")
-    print(f"Prompt leak model (Delimiting): {ATTACKER_KNOWS_PROMPT}, P_leak/step={P_LEAK_PER_STEP:.3f}")
-    print(f"Datamarking token-guess prob (1/N^k): {COLLISION_PROB:.2e}  | expected events ~ {expected_collisions:.2f}")
+    print(f"Modelli testati: {list(MODELS_ASR.keys())}")
     print("-" * 60)
 
-    results = {}
+    # Ciclo su ogni modello configurato
+    for model_name in MODELS_ASR.keys():
+        print(f"\n>>> AVVIO SIMULAZIONE PER MODELLO: {model_name.upper()} <<<")
+        
+        results = {}
 
-    for defense in DEFENSES:
-        static_rate = run_static_test(defense, NUM_SIMULATIONS)
-        dyn_rate, steps, hacked_by_step, traces = run_dynamic_twin(defense, NUM_SIMULATIONS, MAX_ATTEMPTS)
+        for defense in DEFENSES:
+            # Passiamo model_name alle funzioni
+            static_rate = run_static_test(defense, NUM_SIMULATIONS, model_name)
+            dyn_rate, steps, hacked_by_step, traces = run_dynamic_twin(defense, NUM_SIMULATIONS, MAX_ATTEMPTS, model_name)
 
-        avg_steps = statistics.mean(steps) if steps else float("nan")
+            avg_steps = statistics.mean(steps) if steps else float("nan")
 
-        cumulative = []
-        total = 0
-        for t in range(1, MAX_ATTEMPTS + 1):
-            total += hacked_by_step[t]
-            cumulative.append(100.0 * total / NUM_SIMULATIONS)
+            cumulative = []
+            total = 0
+            for t in range(1, MAX_ATTEMPTS + 1):
+                total += hacked_by_step[t]
+                cumulative.append(100.0 * total / NUM_SIMULATIONS)
 
-        results[defense] = {
-            "static_rate": static_rate,
-            "dynamic_rate": dyn_rate,
-            "avg_steps": avg_steps,
-            "cumulative": cumulative,
-            "traces": traces,
-        }
+            results[defense] = {
+                "static_rate": static_rate,
+                "dynamic_rate": dyn_rate,
+                "avg_steps": avg_steps,
+                "cumulative": cumulative,
+                "traces": traces,
+            }
 
-        target = asr_static(defense) * 100.0
-        print(f"=== DIFESA: {defense} ===")
-        print(f"  Static ASR (Paper-like):     {static_rate*100:5.2f}%  (Target: {target:5.2f}%)")
-        print(f"  Dynamic Session Risk (<=K):  {dyn_rate*100:5.2f}%")
-        if steps:
-            print(f"  Media tentativi per violare: {avg_steps:5.2f}")
+            target = asr_static(defense, model_name) * 100.0
+            print(f"--- DIFESA: {defense} ---")
+            print(f"  Static ASR:               {static_rate*100:5.2f}%  (Input: {target:5.2f}%)")
+            print(f"  Dynamic Risk (Session):   {dyn_rate*100:5.2f}%")
+            if steps:
+                print(f"  Media tentativi per violare: {avg_steps:5.2f}")
+            else:
+                print("  Nessuna violazione rilevata.")
+
+        # Plot specifico per questo modello
+        plot_summary(results, MAX_ATTEMPTS, model_name)
+
+        # Generazione Intrusion Graph (solo per Delimiting che è il caso più interessante dinamicamente)
+        if HAS_NX:
+            delim_traces = results["Delimiting"]["traces"]
+            G = build_intrusion_graph(delim_traces)
+            safe_name = model_name.replace(" ", "_").lower()
+            graph_filename = f"intrusion_graph_delimiting_{safe_name}.png"
+            
+            save_intrusion_graph_png(G, graph_filename,
+                                     f"Intrusion Graph - Delimiting - {model_name}")
+            print(f"[OK] Saved Graph: {graph_filename}")
         else:
-            print("  Nessuna violazione rilevata.")
-        print()
-
-    plot_summary(results, MAX_ATTEMPTS)
-
-    if HAS_NX:
-        delim_traces = results["Delimiting"]["traces"]
-        G = build_intrusion_graph(delim_traces)
-        save_intrusion_graph_png(G, "intrusion_graph_delimiting.png",
-                                 "Intrusion Graph (Toy) - Delimiting (Leak/Learning)")
-        print("[OK] Saved: intrusion_graph_delimiting.png")
-    else:
-        print("[WARN] networkx non installato. Installa con: pip install networkx")
-
+            print("[WARN] networkx non installato.")
+        
+        print("-" * 40)
 
 if __name__ == "__main__":
     main()
