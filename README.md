@@ -9,12 +9,15 @@ Il codice usa valori di ASR statici (paper + stime manuali) e simula una session
 
 ## Setup & Run
 python3 -m venv .venv
+
 source .venv/bin/activate
+
 pip install -r requirements.txt
+
 python3 src/montecarlo.py
 
 
-
+--- 
 
 Il programma genera automaticamente i file:
 
