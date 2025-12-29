@@ -9,6 +9,13 @@ python3 montecarlo.py
 
 Outputs:
 
-spotlighting_security_twin_results.png
+security_twin_results_gpt-3.5.png
+security_twin_results_mistral.png
+security_twin_results_qwen_2.5.png
 
-intrusion_graph_delimiting.png (if networkx installed)
+intrusion_graph_delimiting_gpt-3.5.png
+intrusion_graph_delimiting_mistral.png
+intrusion_graph_delimiting_qwen_2.5.png
+
+
+
