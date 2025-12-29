@@ -17,12 +17,18 @@ python3 src/montecarlo.py
 
 
 Il programma genera automaticamente i file:
+
 security_twin_results_gpt-3.5.png
+
 security_twin_results_mistral.png
+
 security_twin_results_qwen_2.5.png
 
+
 intrusion_graph_delimiting_gpt-3.5.png
+
 intrusion_graph_delimiting_mistral.png
+
 intrusion_graph_delimiting_qwen_2.5.png
 
 Gli ASR di Qwen 2.5 e Mistral sono stati stimati manualmente con Ollama (20 tentativi per difesa, prompt di attacco uguali tra condizioni).
