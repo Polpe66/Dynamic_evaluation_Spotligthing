@@ -15,6 +15,7 @@ except ImportError:
 
 # ----------------------------
 # CONFIG
+# ----------------------------
 SEED = 42
 NUM_SIMULATIONS = 5000
 MAX_ATTEMPTS = 20
@@ -26,13 +27,18 @@ P_LEAK_PER_STEP = 1.0 - math.exp(-LEARN_LAMBDA)
 
 # --- Datamarking guess model (toy) ---
 N_CHARS = 62
-K_GRAM = 3 #Paper used 5
+K_GRAM = 3  # Paper used 5
 COLLISION_PROB = 1.0 / (N_CHARS ** K_GRAM)
 
 DEFENSES = ["None", "InstructionsOnly", "Delimiting", "Datamarking", "Encoding"]
 
+# Output directory
+RESULTS_DIR = "results"
+
+
 # ----------------------------
 # ASR inputs
+# ----------------------------
 MODELS_ASR = {
     # Paper ASR
     "GPT-3.5": {
@@ -67,13 +73,19 @@ def asr_static(defense: str, model_name: str) -> float:
 
 # ----------------------------
 # Cleanup old PNGs
+# ----------------------------
 def cleanup_old_pngs():
+    """
+    Remove old output images.
+    Now that outputs are written to RESULTS_DIR, we clean there.
+    """
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
     patterns = [
-        "security_twin_results_*.png",
-        "intrusion_graph_delimiting_*.png",
-        "spotlighting_security_twin_results.png",
-        "intrusion_graph_delimiting.png",
+        os.path.join(RESULTS_DIR, "security_twin_results_*.png"),
+        os.path.join(RESULTS_DIR, "intrusion_graph_delimiting_*.png"),
     ]
+
     deleted = 0
     for pat in patterns:
         for f in glob.glob(pat):
@@ -82,11 +94,12 @@ def cleanup_old_pngs():
                 deleted += 1
             except OSError as e:
                 print(f"[WARN] Could not delete {f}: {e}")
-    print(f"[OK] Deleted {deleted} old .png files.")
+    print(f"[OK] Deleted {deleted} old .png files from '{RESULTS_DIR}/'.")
 
 
 # ----------------------------
 # Simulations
+# ----------------------------
 def run_static_test(defense: str, n: int, model_name: str) -> float:
     """Static benchmark: 1 attempt per episode (single-shot ASR)."""
     p = asr_static(defense, model_name)
@@ -181,11 +194,11 @@ def run_dynamic_twin(defense: str, n: int, K: int, model_name: str, save_traces:
 
 # ----------------------------
 # Intrusion graph (aggregated, correct counts)
+# ----------------------------
 def build_intrusion_graph(traces):
     """
     Robust aggregation: for each (u -> v) we accumulate:
       - count, success, fail, p_sum, p_avg
-    (No overwriting problems as with DiGraph+single label.)
     """
     if not HAS_NX or not traces:
         return None
@@ -194,7 +207,7 @@ def build_intrusion_graph(traces):
 
     for trace in traces:
         for (s_from, action, s_to) in trace:
-            outcome = action[2]          # "SUCCESS" / "FAIL"
+            outcome = action[2]  # "SUCCESS" / "FAIL"
             p = float(action[3])
 
             if not G.has_node(s_from):
@@ -213,7 +226,7 @@ def build_intrusion_graph(traces):
             else:
                 e["fail"] += 1
 
-    for u, v, d in G.edges(data=True):
+    for _, _, d in G.edges(data=True):
         d["p_avg"] = d["p_sum"] / max(1, d["count"])
         d["label"] = f"c:{d['count']} S:{d['success']} F:{d['fail']} p_avg:{d['p_avg']:.2f}"
 
@@ -222,9 +235,10 @@ def build_intrusion_graph(traces):
 
 # ----------------------------
 # Ordered layout
+# ----------------------------
 def ordered_grid_layout(G, x_scale: float = 1.8, y_scale: float = 1.6):
     """
-    Deterministic, explanatory layout:
+    Deterministic layout:
       x = time step t
       y = state class rows
     COMPROMISED at the far right.
@@ -236,7 +250,7 @@ def ordered_grid_layout(G, x_scale: float = 1.8, y_scale: float = 1.6):
     y_map = {
         (False, False): 3,  # CLEAN
         (True,  False): 2,  # LEAK
-        (False, True):  1,  # GUESS -> In Delimitng does not GUESS
+        (False, True):  1,  # GUESS (not used by Delimiting, but kept for compatibility)
         (True,  True):  0,  # BOTH
     }
 
@@ -259,6 +273,7 @@ def ordered_grid_layout(G, x_scale: float = 1.8, y_scale: float = 1.6):
 
 # ----------------------------
 # Save intrusion graph PNG
+# ----------------------------
 def save_intrusion_graph_png(
     G,
     filename: str,
@@ -268,11 +283,7 @@ def save_intrusion_graph_png(
     show_vertical_step_guides: bool = True
 ):
     """
-    Draws ALL relevant transitions (no edge filtering), but keeps it readable by:
-      - ordered grid layout (no spaghetti)
-      - labels only on the most frequent edges (+ always those into COMPROMISED)
-      - slight curvature on edges to reduce overlaps
-      - optional vertical guides for steps
+    Draws ALL transitions, labels only a subset for readability.
     """
     if not HAS_NX or G is None:
         return
@@ -292,16 +303,13 @@ def save_intrusion_graph_png(
             return f"t={t}\nGUESS"
         return f"t={t}\nCLEAN"
 
-    # Ordered positions
     pos = ordered_grid_layout(G)
 
-    # Determine max_t for guides and sizing
     max_t = 0
     for n in G.nodes():
         if not is_compromised(n):
             max_t = max(max_t, n[0])
 
-    # Node styling
     node_labels = {n: pretty_state(n) for n in G.nodes()}
     node_colors = []
     node_sizes = []
@@ -310,7 +318,7 @@ def save_intrusion_graph_png(
             node_colors.append("red")
             node_sizes.append(1700)
         else:
-            t, leaked, guessed = n
+            _, leaked, guessed = n
             if leaked and guessed:
                 node_colors.append("gold")
             elif leaked:
@@ -321,9 +329,7 @@ def save_intrusion_graph_png(
                 node_colors.append("lightblue")
             node_sizes.append(900)
 
-    # Edge list and styling
     edges_all = list(G.edges())
-    total = sum(G[u][v].get("count", 0) for u, v in edges_all) or 1
     max_c = max((G[u][v].get("count", 0) for u, v in edges_all), default=1)
 
     edge_widths = []
@@ -331,18 +337,15 @@ def save_intrusion_graph_png(
     for u, v in edges_all:
         d = G[u][v]
         c = d.get("count", 0)
-        # width: gentle scaling
         w = 0.8 + 4.5 * (c / max_c)
         edge_widths.append(w)
         edge_colors.append("green" if d.get("success", 0) > 0 else "gray")
 
-    # Choose which edges to label
     edges_sorted = sorted(
         ((u, v, G[u][v].get("count", 0)) for (u, v) in edges_all),
         key=lambda x: x[2],
         reverse=True
     )
-
     edges_to_label = set((u, v) for (u, v, _) in edges_sorted[:label_top_k])
 
     if always_label_compromised_in:
@@ -352,26 +355,22 @@ def save_intrusion_graph_png(
 
     edge_labels = {(u, v): G[u][v].get("label", "") for (u, v) in edges_to_label}
 
-    # Draw
     plt.figure(figsize=(20, 9))
 
-    # Optional vertical guides per step
     if show_vertical_step_guides:
-        xs = sorted(set(x for (x, y) in pos.values()))
-        # The x positions are scaled steps (t * x_scale); build lines for t=0..max_t
-        # We infer x_scale from t=1 - t=0 when possible
         inferred_xs = {}
-        for n, (x, y) in pos.items():
+        for n, (x, _) in pos.items():
             if not is_compromised(n):
                 inferred_xs[n[0]] = x
+
         for t in range(0, max_t + 1):
             if t in inferred_xs:
                 x = inferred_xs[t]
                 plt.axvline(x=x, linewidth=0.6, alpha=0.25)
                 plt.text(x, -0.6, f"t={t}", fontsize=8, ha="center", alpha=0.8)
 
-        # Row labels on the left
-        x_min = min(x for x, y in pos.values())
+        x_min = min(x for x, _ in pos.values())
+        # y_scale is 1.6 by default in ordered_grid_layout
         plt.text(x_min - 1.5, 3 * 1.6, "CLEAN", fontsize=10, alpha=0.9)
         plt.text(x_min - 1.5, 2 * 1.6, "LEAK", fontsize=10, alpha=0.9)
         plt.text(x_min - 1.5, 1 * 1.6, "GUESS", fontsize=10, alpha=0.9)
@@ -405,6 +404,7 @@ def save_intrusion_graph_png(
 
 # ----------------------------
 # Plotting
+# ----------------------------
 def plot_summary(results, K: int, model_name: str):
     fig = plt.figure(figsize=(14, 6), constrained_layout=True)
 
@@ -439,7 +439,8 @@ def plot_summary(results, K: int, model_name: str):
     ax2.legend(fontsize=9)
 
     safe_name = model_name.replace(" ", "_").lower()
-    out = f"security_twin_results_{safe_name}.png"
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    out = os.path.join(RESULTS_DIR, f"security_twin_results_{safe_name}.png")
     plt.savefig(out)
     plt.close()
     print(f"[OK] Saved: {out}")
@@ -447,6 +448,7 @@ def plot_summary(results, K: int, model_name: str):
 
 # ----------------------------
 # Main
+# ----------------------------
 def main():
     random.seed(SEED)
     cleanup_old_pngs()
@@ -472,7 +474,7 @@ def main():
         for defense in DEFENSES:
             static_rate = run_static_test(defense, NUM_SIMULATIONS, model_name)
 
-            # Save traces ONLY for Delimiting
+            # Save traces ONLY for Delimiting (intrusion graph)
             save_traces = (defense == "Delimiting")
             dyn_rate, steps, hacked_by_step, traces = run_dynamic_twin(
                 defense, NUM_SIMULATIONS, MAX_ATTEMPTS, model_name, save_traces=save_traces
@@ -510,15 +512,19 @@ def main():
             delim_traces = results["Delimiting"]["traces"]
             G = build_intrusion_graph(delim_traces)
             safe_name = model_name.replace(" ", "_").lower()
+
+            os.makedirs(RESULTS_DIR, exist_ok=True)
+            out_graph = os.path.join(RESULTS_DIR, f"intrusion_graph_delimiting_{safe_name}.png")
+
             save_intrusion_graph_png(
                 G,
-                f"intrusion_graph_delimiting_{safe_name}.png",
+                out_graph,
                 f"Intrusion Graph (Toy) - Delimiting - {model_name}",
-                label_top_k=18,                
+                label_top_k=18,
                 always_label_compromised_in=True,
-                show_vertical_step_guides=True 
+                show_vertical_step_guides=True
             )
-            print(f"[OK] Saved: intrusion_graph_delimiting_{safe_name}.png")
+            print(f"[OK] Saved: {out_graph}")
         else:
             print("[WARN] networkx not installed (skip intrusion graph).")
 
